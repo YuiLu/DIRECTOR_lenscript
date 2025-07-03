@@ -1,0 +1,21 @@
+name: 'lenscript_meanstd'
+num_interframes: 0
+num_cams: 180
+num_total_frames: ${eval:'${dataset.standardization.num_interframes} * (${dataset.standardization.num_cams} - 1) + ${dataset.standardization.num_cams} '}
+
+norm_mean: [-3.640532672279321e-06, -2.9221169450656703e-05, -0.00030997928132603906]
+norm_std: [0.006964764710352204, 0.002148120980079846, 0.0073105311585161545]
+
+shift_mean: [-0.0024971197700000797, 0.004486411651666649, 0.031665816019166466]
+shift_std: [1.4782227566331294, 0.4330664584206192, 1.4944276697510879]
+
+norm_mean_fov: 0.0009488902954469269
+norm_std_fov: 0.05428493991475054
+
+shift_mean_fov: 46.00945646337417
+shift_std_fov: 14.240198156740943
+
+norm_mean_h: [6.676e-05, -5.084e-05, -7.782e-04]
+norm_std_h: [0.0105, 0.006958, 0.01145]
+
+velocity: true

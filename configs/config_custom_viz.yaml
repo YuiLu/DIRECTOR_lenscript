@@ -1,6 +1,6 @@
 defaults:
-  - dataset: traj+caption+char
-  - diffuser: director_edm
+  - dataset: lenscript
+  - diffuser: director_edm_lenscript
   - compnode: cpu
   - _self_
 
@@ -8,18 +8,18 @@ timestamp: ${now:%Y-%m-%d-%H-%M-%S}
 
 outdir: null
 entity: null
-project_name: trajectory-diffusion
+project_name: "director_custom"
 results_dir: ./results
-data_dir: ./et-data
+data_dir: ./lenscript
 xp_name: ${diffuser.loss.name}-${diffuser.network.module.name}-${dataset.name}
 log_dir: ${results_dir}/${xp_name}/${timestamp}
-checkpoint_path: /data/DIRECTOR/checkpoints/director/incontext-pure-e989.ckpt
+checkpoint_path: /data/DIRECTOR/checkpoints/lenscript_incontext/director_incontext_lenscript_epoch=1087.ckpt
 
 seed: 42
-save_and_sample_every: 10
-num_train_epochs: 1001
+save_and_sample_every: 64
+num_train_epochs: 257
 log_wandb: true
-batch_size: 128
+batch_size: 64
 
 hydra:
   run:

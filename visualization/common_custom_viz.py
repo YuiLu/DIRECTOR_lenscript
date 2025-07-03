@@ -8,6 +8,8 @@ import torch
 from torchtyping import TensorType
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
+from torch.serialization import add_safe_globals
+from omegaconf.listconfig import ListConfig
 
 from src.training.diffuser_lenscript import Diffuser
 from src.datasets.multimodal_dataset import MultimodalDataset
@@ -81,11 +83,18 @@ def get_batch(
     dataset: MultimodalDataset,
     seq_feat: bool,
     device: torch.device,
+    custom_first_frame=None
 ) -> Dict[str, Any]:
     # Get base batch
     sample_index = dataset.root_filenames.index(sample_id)
     raw_batch = dataset[sample_index]
+    print(f"RAW BATCH KAYS: {raw_batch.keys()}")
     batch = collate_fn([to_device(raw_batch, device)])
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor):
+            print(f"Key: {key}, Shape: {value.shape}\n")
+        else:
+            print(f"Key: {key}, Type: {type(value)}\n")
 
     # Encode text
     caption_seq, caption_tokens = encode_text([prompt], clip_model, None, device)
@@ -101,6 +110,39 @@ def get_batch(
     batch["caption_raw"] = [prompt]
     batch["caption_feat"] = caption_feat
 
+    if custom_first_frame is not None:
+        traj_dataset = dataset.trajectory_dataset
+
+        if isinstance(custom_first_frame, list) and len(custom_first_frame) == 13:
+            matrix = torch.eye(4, device=device)
+            matrix[0, 0:3] = torch.tensor(custom_first_frame[0:3], device=device)
+            matrix[1, 0:3] = torch.tensor(custom_first_frame[4:7], device=device)
+            matrix[2, 0:3] = torch.tensor(custom_first_frame[8:11], device=device)
+            matrix[0, 3] = custom_first_frame[3]
+            matrix[1, 3] = custom_first_frame[7]
+            matrix[2, 3] = custom_first_frame[11]
+            
+            fov = torch.tensor([custom_first_frame[12]], device=device)
+            
+            trans = matrix[:3, 3].clone().unsqueeze(0)  # [1, 3]
+            if traj_dataset.standardize:
+                trans -= traj_dataset.shift_mean.to(device)
+                trans /= traj_dataset.shift_std.to(device)
+                
+            rot = matrix[:3, :3]
+            rot6d = rot[:, :2].permute(1, 0).reshape(1, 6)  # [1, 6]
+            
+            fov_normalized = fov.clone()
+            if traj_dataset.standardize:
+                fov_normalized -= traj_dataset.shift_mean_fov.to(device)
+                fov_normalized /= traj_dataset.shift_std_fov.to(device)
+                
+            first_frame_feat = torch.cat([rot6d, trans, fov_normalized.reshape(1, 1)], dim=1)   # [1, 10]
+            
+            batch["custom_first_frame"] = first_frame_feat
+        else:
+            print("Warning: Custom first frame format invalid. Expecting 13 values.")
+
     return batch
 
 
@@ -115,7 +157,14 @@ def init(
     # Initialize model
     device = torch.device(config.compnode.device)
     diffuser = instantiate(config.diffuser)
-    state_dict = torch.load(config.checkpoint_path, map_location=device)["state_dict"]
+
+    add_safe_globals([ListConfig])
+    state_dict = torch.load(
+        config.checkpoint_path, 
+        map_location=device,
+        weights_only=False  # Allow loading non-tensor objects
+    )["state_dict"]
+    
     state_dict["ema.initted"] = diffuser.ema.initted
     state_dict["ema.step"] = diffuser.ema.step
     diffuser.load_state_dict(state_dict, strict=False)
@@ -125,7 +174,6 @@ def init(
     clip_model = load_clip_model("ViT-B/32", device)
 
     # Initialize dataset
-    config.dataset.char.load_vertices = True
     config.batch_size = 1
     dataset = instantiate(config.dataset)
     dataset.set_split("test")

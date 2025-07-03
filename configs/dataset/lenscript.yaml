@@ -1,0 +1,17 @@
+_target_: src.datasets.multimodal_dataset_lenscript.MultimodalDataset
+
+defaults:
+  - _self_
+  - trajectory: lenscript_traj
+  - caption: lenscript_caption
+  - standardization: 'lenscript_meanstd'
+
+name: "${dataset.standardization.name}-t:${dataset.trajectory.name}-c:${dataset.caption.name}"
+dataset_name: ${dataset.standardization.name}
+dataset_dir: ${data_dir}
+
+num_rawfeats: 13
+num_cams: ${dataset.standardization.num_cams}
+feature_type: ${dataset.trajectory.name}
+num_feats: ${dataset.trajectory.num_feats}
+num_cond_feats: ['${dataset.caption.num_feats}', '${dataset.trajectory.num_feats}']

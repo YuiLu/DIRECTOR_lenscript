@@ -2,10 +2,10 @@ from typing import Any, Dict, List, Tuple
 
 from torchtyping import TensorType
 
-from src.metrics.modules.caption import CaptionMetrics
-from src.metrics.modules.fcd import FrechetCLaTrDistance
-from src.metrics.modules.prdc import ManifoldMetrics
-from src.metrics.modules.clatr_score import CLaTrScore
+from src.metrics_lenscript.modules.caption import CaptionMetrics
+from src.metrics_lenscript.modules.fcd import FrechetCLaTrDistance
+from src.metrics_lenscript.modules.prdc import ManifoldMetrics
+from src.metrics_lenscript.modules.clatr_score import CLaTrScore
 
 # ------------------------------------------------------------------------------------- #
 

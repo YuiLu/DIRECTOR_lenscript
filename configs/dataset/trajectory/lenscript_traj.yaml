@@ -1,0 +1,10 @@
+_target_: src.datasets.modalities.trajectory_lenscript_dataset.LenscriptTrajectoryDataset
+
+name: lenscript_traj
+set_name: mixed
+dataset_dir: ${dataset.dataset_dir}
+num_feats: 10
+num_rawfeats: ${dataset.num_rawfeats}
+num_cams: ${dataset.num_cams}
+standardize: true
+standardization: ${dataset.standardization}

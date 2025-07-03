@@ -58,6 +58,7 @@ class MultimodalDataset(Dataset):
 
         self.get_feature = self.trajectory_dataset.get_feature
         self.get_matrix = self.trajectory_dataset.get_matrix
+        self.batch_get_matrix = self.trajectory_dataset.batch_get_matrix
 
         return self
 
@@ -65,12 +66,14 @@ class MultimodalDataset(Dataset):
 
     def __getitem__(self, index):
         traj_out = self.trajectory_dataset[index]
-        traj_filename, traj_feature, padding_mask, intrinsics = traj_out
+        # traj_filename, traj_feature, padding_mask, intrinsics = traj_out
+        traj_filename, traj_feature, padding_mask = traj_out
+
         out = {
             "traj_filename": traj_filename,
             "traj_feat": traj_feature,
             "padding_mask": padding_mask,
-            "intrinsics": intrinsics,
+            # "intrinsics": intrinsics,
         }
 
         for modality_name, modality_dataset in self.modality_datasets.items():

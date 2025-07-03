@@ -266,15 +266,18 @@ class CLaTr(TEMOS):
                 loss_val = contrastive_metrics[loss_name]
                 self.log(f"val/{loss_name}", loss_val)
 
-            ref_matrices = torch.stack(
-                [self.get_matrix(x.permute(1, 0)) for x in ref_trajectories[:, :, :9]]
-            )
-            t_matrices = torch.stack(
-                [self.get_matrix(x.permute(1, 0)) for x in t_trajectories[:, :, :9]]
-            )
-            m_matrices = torch.stack(
-                [self.get_matrix(x.permute(1, 0)) for x in m_trajectories[:, :, :9]]
-            )
+            # Unpack matrices and FOVs
+            ref_outputs = [self.get_matrix(x.permute(1, 0)) for x in ref_trajectories[:, :, :9]]
+            ref_matrices = torch.stack([output[0] for output in ref_outputs])
+            ref_fovs = torch.stack([output[1] for output in ref_outputs])
+            
+            t_outputs = [self.get_matrix(x.permute(1, 0)) for x in t_trajectories[:, :, :9]]
+            t_matrices = torch.stack([output[0] for output in t_outputs])
+            t_fovs = torch.stack([output[1] for output in t_outputs])
+            
+            m_outputs = [self.get_matrix(x.permute(1, 0)) for x in m_trajectories[:, :, :9]]
+            m_matrices = torch.stack([output[0] for output in m_outputs])
+            m_fovs = torch.stack([output[1] for output in m_outputs])
 
             # Draw reconstructed trajectories
             traj_plots = self.draw_traj_plots(
@@ -330,15 +333,18 @@ class CLaTr(TEMOS):
         batch["t_trajectories"] = t_trajectories
         batch["m_trajectories"] = m_trajectories
 
-        batch["ref_matrices"] = torch.stack(
-            [self.get_matrix(x.permute(1, 0)) for x in batch["traj_feat"][:, :, :9]]
-        )
-        batch["t_matrices"] = torch.stack(
-            [self.get_matrix(x.permute(1, 0)) for x in t_trajectories[:, :, :9]]
-        )
-        batch["m_matrices"] = torch.stack(
-            [self.get_matrix(x.permute(1, 0)) for x in m_trajectories[:, :, :9]]
-        )
+        ref_outputs = [self.get_matrix(x.permute(1, 0)) for x in batch["traj_feat"][:, :, :9]]
+        batch["ref_matrices"] = torch.stack([output[0] for output in ref_outputs])
+        batch["ref_fovs"] = torch.stack([output[1] for output in ref_outputs])
+        
+        t_outputs = [self.get_matrix(x.permute(1, 0)) for x in t_trajectories[:, :, :9]]
+        batch["t_matrices"] = torch.stack([output[0] for output in t_outputs])
+        batch["t_fovs"] = torch.stack([output[1] for output in t_outputs])
+        
+        m_outputs = [self.get_matrix(x.permute(1, 0)) for x in m_trajectories[:, :, :9]]
+        batch["m_matrices"] = torch.stack([output[0] for output in m_outputs])
+        batch["m_fovs"] = torch.stack([output[1] for output in m_outputs])
+
 
         return batch
 

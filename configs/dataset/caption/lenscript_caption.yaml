@@ -1,0 +1,14 @@
+_target_: src.datasets.modalities.caption_lenscript_dataset.LenscriptCaptionDataset
+
+name: caption
+
+dataset_dir: ${dataset.dataset_dir}
+segment_dir: ${dataset.dataset_dir}/v4_shot_cam_segment
+raw_caption_dir: ${dataset.dataset_dir}/v4_shot_tags/raw_simple
+feat_caption_dir: ${dataset.dataset_dir}/v4_shot_tags/clip_simple
+
+num_segments: 13
+num_feats: 512
+num_cams: ${dataset.standardization.num_cams}
+sequential: ${diffuser.network.module.clip_sequential}
+max_feat_length: 77

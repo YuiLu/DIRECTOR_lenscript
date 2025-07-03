@@ -1,5 +1,5 @@
 defaults:
-  - temos
+  - temos_lenscript
   - _self_
 
 _target_: clatr.src.models.clatr.CLaTr
@@ -7,5 +7,5 @@ _target_: clatr.src.models.clatr.CLaTr
 temperature: 0.1
 threshold_selfsim: 0.995 # 0.99 = 2 * 0.995 - 1
 threshold_selfsim_metrics: 0.995 # 0.99 = 2 * 0.995 - 1
-checkpoint_path: /data/DIRECTOR/checkpoints/clatr-e100.ckpt
+checkpoint_path: /data/DIRECTOR/checkpoints/last.ckpt
 device: ${compnode.device}

@@ -882,10 +882,19 @@ class AdaLNDirector(BaseDirector):
         assert not (clip_sequential and cond_sequential)
 
     def init_conds_mappings(self, num_cond_feats, latent_dim):
-        self.joint_cond_projection = nn.Linear(sum(num_cond_feats), latent_dim)
+        self.joint_cond_projection = nn.Linear(sum(num_cond_feats)+self.num_feats, latent_dim)
 
     def cond_mapping(self, cond: List[Tensor], mask: Tensor, t: Tensor) -> Tensor:
-        c_emb = torch.cat(cond, dim=-1)
+        # Ensure all tensors have the same number of dimensions before concatenating
+        processed_cond = []
+        for c in cond:
+            if c.dim() == 3:
+                # Reshape 3D tensors to 2D by flattening the last two dimensions
+                processed_cond.append(c.reshape(c.shape[0], -1))
+            else:
+                processed_cond.append(c)
+        
+        c_emb = torch.cat(processed_cond, dim=-1)
         return self.joint_cond_projection(c_emb) + t
 
     def init_backbone(
@@ -1103,12 +1112,17 @@ class InContextDirector(BaseDirector):
         )
 
     def cond_mapping(self, cond: List[Tensor], mask: Tensor, t: Tensor) -> Tensor:
+        # for i, c in enumerate(cond):
+        #     print(f"Condition {i} shape before processing: {c.shape}")
         for i in range(len(cond)):
             if cond[i].dim() == 3:
                 cond[i] = rearrange(cond[i], "b c n -> b n c")
         cond_emb = [cond_proj(c) for cond_proj, c in zip(self.cond_projection, cond)]
         cond_emb = [c.unsqueeze(1) if c.dim() == 2 else cond_emb for c in cond_emb]
+        # for emb in cond_emb:
+        #     print(f"Condition embedding shape: {emb.shape}")
         cond_emb = torch.cat([t.unsqueeze(1)] + cond_emb, dim=1)
+        # print(f"Condition embedding shape: {cond_emb.shape}")
         return cond_emb
 
     def init_backbone(

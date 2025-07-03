@@ -1,0 +1,40 @@
+_target_: src.training.diffuser_lenscript_nofirstframe.Diffuser
+
+defaults:
+  - _self_
+  - network: director
+  - loss: edm
+  - optimizer: adamW
+  - lr_scheduler: warmup_cosine
+  - clatr: clatr_lenscript
+
+metric_callback:
+  _target_: src.metrics_lenscript.callback.MetricCallback
+  _partial_: true
+
+  num_cams: ${dataset.num_cams}
+  num_classes: 27
+
+# Main options
+log_wandb: ${log_wandb}
+guidance_weight: 1.4
+first_frame_guidance_weight: 2.0
+use_first_frame_condition: true
+edm2_normalization: true
+sync_dist: true
+
+# EMA
+ema_kwargs:
+  beta: 0.9999
+  update_every: 1
+
+# Sampling
+sampling_kwargs:
+  num_steps: 10
+  sigma_min: 0.002
+  sigma_max: 80
+  rho: 40
+  S_churn: 0
+  S_min: 0
+  S_max: inf
+  S_noise: 1

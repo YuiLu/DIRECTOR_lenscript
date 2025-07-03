@@ -19,6 +19,10 @@ from utils.rotation_utils import project_so3
 from utils.visualization import draw_trajectories
 from src.metrics.callback import MetricCallback
 
+import time
+import gc
+import os
+from collections import deque
 
 # ------------------------------------------------------------------------------------- #
 
@@ -48,7 +52,7 @@ class Diffuser(L.LightningModule):
     ):
         super().__init__()
 
-
+        self.save_model = deque(maxlen=3)
 
         self.timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         self.log_wandb = log_wandb
@@ -83,6 +87,7 @@ class Diffuser(L.LightningModule):
             else float("inf")
         )
 
+        self.per_epoch_steps = 196
 
 
 
@@ -111,6 +116,10 @@ class Diffuser(L.LightningModule):
         eval_dataset = self.trainer.datamodule.eval_dataset
         self.modalities = list(eval_dataset.modality_datasets.keys())
         self.metric_callback = self.metric_callback(device=self.device)
+        self.clatr = self.clatr.to(self.device)
+
+        self.batch_get_matrix = None
+        self.v_batch_get_matrix = None
 
         self.do_segment = False
         self.val_plot_samples = dict()
@@ -157,12 +166,22 @@ class Diffuser(L.LightningModule):
         self.get_matrix = self.trainer.datamodule.train_dataset.get_matrix
         self.v_get_matrix = self.trainer.datamodule.eval_dataset.get_matrix
 
+        train_dataset = self.trainer.datamodule.train_dataset
+        eval_dataset = self.trainer.datamodule.eval_dataset
+        
+        if hasattr(train_dataset, 'batch_get_matrix'):
+            self.batch_get_matrix = train_dataset.batch_get_matrix
+        if hasattr(eval_dataset, 'batch_get_matrix'):
+            self.v_batch_get_matrix = eval_dataset.batch_get_matrix
+
     def training_step(self, batch, batch_idx):
         data, mask = batch["traj_feat"], batch["padding_mask"]
+
         conds = dict()
         if len(self.modalities) > 0:
             cond_k = [x for x in batch.keys() if "traj" not in x and "feat" in x]
             cond_data = [batch[cond] for cond in cond_k]
+            # print(f"Shape of cond_data: {[x.shape for x in cond_data]}")
             for cond in cond_k:
                 cond_name = cond.replace("_feat", "")
                 if isinstance(batch[f"{cond_name}_raw"], dict):
@@ -185,78 +204,92 @@ class Diffuser(L.LightningModule):
         # Log metrics
         self.log("train/loss", loss.item(), sync_dist=self.sync_dist)
 
-        if not (
-            not (self.trainer.current_epoch % self.trainer.check_val_every_n_epoch)
-            and (self.trainer.current_epoch > 0)
-        ):
-            return loss
+        # if not (
+        #     not (self.trainer.current_epoch % self.trainer.check_val_every_n_epoch)
+        #     and (self.trainer.current_epoch > 0)
+        # ):
+        #     return loss
 
-        # Infer CLaTr features
-        _, gen_data = self.sample(self.ema.ema_model, data, cond_data, mask)
-        clip_seq = batch["caption_raw"]["clip_seq_caption"]
-        clip_seq_mask = batch["caption_raw"]["clip_seq_mask"]
-        with torch.autocast(device_type=data.device.type, dtype=data.dtype):
-            with torch.no_grad():
-                ref_clatr = self.clatr.encode(
-                    {"x": data.permute(0, 2, 1), "mask": mask.to(bool)}
-                )
-                if clip_seq is not None:
-                    text_clatr = self.clatr.encode(
-                        {"x": clip_seq, "mask": clip_seq_mask.to(bool)}
-                    )
-                gen_clatr = self.clatr.encode(
-                    {"x": gen_data.permute(0, 2, 1), "mask": mask.to(bool)}
-                )
+        # # Infer CLaTr features
+        # _, gen_data = self.sample(self.ema.ema_model, data, cond_data, mask)
+        # clip_seq = batch["caption_raw"]["clip_seq_caption"]
+        # clip_seq_mask = batch["caption_raw"]["clip_seq_mask"]
+        # with torch.autocast(device_type=data.device.type, dtype=data.dtype):
+        #     with torch.no_grad():
+        #         ref_clatr = self.clatr.encode(
+        #             {"x": data.permute(0, 2, 1), "mask": mask.to(bool)}
+        #         )
+        #         if clip_seq is not None:
+        #             text_clatr = self.clatr.encode(
+        #                 {"x": clip_seq, "mask": clip_seq_mask.to(bool)}
+        #             )
+        #         gen_clatr = self.clatr.encode(
+        #             {"x": gen_data.permute(0, 2, 1), "mask": mask.to(bool)}
+        #         )
 
-        # Update distribution metrics
-        self.metric_callback.update_clatr_metrics(
-            "train", gen_clatr, ref_clatr, text_clatr
-        )
+        # # Update distribution metrics
+        # self.metric_callback.update_clatr_metrics(
+        #     "train", gen_clatr, ref_clatr, text_clatr
+        # )
 
-        # Update semantic metrics
-        if "segments" in conds:
-            self.do_segment = True
-            gen_traj = torch.stack([self.get_matrix(x) for x in gen_data])
-            ref_traj = torch.stack([self.v_get_matrix(x) for x in data])
-            # Project on SO(3) (if not in SO(3))
-            p_gen_traj = project_so3(gen_traj.reshape(-1, 4, 4)).reshape(
-                *gen_traj.shape
-            )
-            self.metric_callback.update_caption_metrics(
-                "train", p_gen_traj, conds["segments"], mask
-            )
+        # # Update semantic metrics
+        # if "segments" in conds:
+        #     self.do_segment = True
+        #     gen_traj_mats, gen_fovs = zip(*[self.get_matrix(x) for x in gen_data])
+        #     gen_traj = torch.stack(gen_traj_mats)
+        #     gen_fovs = torch.stack(gen_fovs)
+        #     ref_traj_mats, ref_fovs = zip(*[self.v_get_matrix(x) for x in data])
+        #     ref_traj = torch.stack(ref_traj_mats)
+        #     ref_fovs = torch.stack(ref_fovs)
+        #     # Project on SO(3) (if not in SO(3))
+        #     p_gen_traj = project_so3(gen_traj.reshape(-1, 4, 4)).reshape(
+        #         *gen_traj.shape
+        #     )
+        #     self.metric_callback.update_caption_metrics(
+        #         "train", p_gen_traj, conds["segments"], mask, gen_fovs
+        #     )
 
         return loss
 
     def on_after_backward(self):
         self.ema.update()
 
+    # def on_train_epoch_end(self):
+    #     # Log metrics for same number of val batches each `check_val_every_n_epoch`
+    #     if (
+    #         # fmt: off
+    #         not self.log_wandb
+    #         or (self.trainer.current_epoch % self.trainer.check_val_every_n_epoch)
+    #         or (self.trainer.current_epoch == 0)
+    #         # fmt: on
+    #     ):
+    #         return
+
+    #     # Compute distribution metrics
+    #     metrics_dict = self.metric_callback.compute_clatr_metrics("train")
+
+    #     # Compute semantic metrics
+    #     if self.do_segment:
+    #         metrics_dict.update(self.metric_callback.compute_caption_metrics("train"))
+
+    #     for key, value in metrics_dict.items():
+    #         self.log(f"train/{key}", value, sync_dist=self.sync_dist)
+    
+    
     def on_train_epoch_end(self):
-        # Log metrics for same number of val batches each `check_val_every_n_epoch`
-        if (
-            # fmt: off
-            not self.log_wandb
-            or (self.trainer.current_epoch % self.trainer.check_val_every_n_epoch)
-            or (self.trainer.current_epoch == 0)
-            # fmt: on
-        ):
-            return
-
-        # Compute distribution metrics
-        metrics_dict = self.metric_callback.compute_clatr_metrics("train")
-
-        # Compute semantic metrics
-        if self.do_segment:
-            metrics_dict.update(self.metric_callback.compute_caption_metrics("train"))
-
-        for key, value in metrics_dict.items():
-            self.log(f"train/{key}", value, sync_dist=self.sync_dist)
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # ---------------------------------------------------------------------------------- #
 
     def on_validation_epoch_start(self):
-        self.get_matrix = self.trainer.datamodule.train_dataset.get_matrix
-        self.v_get_matrix = self.trainer.datamodule.eval_dataset.get_matrix
+        train_dataset = self.trainer.datamodule.train_dataset
+        eval_dataset = self.trainer.datamodule.eval_dataset
+        
+        if hasattr(train_dataset, 'batch_get_matrix'):
+            self.batch_get_matrix = train_dataset.batch_get_matrix
+        if hasattr(eval_dataset, 'batch_get_matrix'):
+            self.v_batch_get_matrix = eval_dataset.batch_get_matrix
 
     def validation_step(self, batch, batch_idx):
         data, mask = batch["traj_feat"], batch["padding_mask"]
@@ -265,6 +298,7 @@ class Diffuser(L.LightningModule):
         if len(self.modalities) > 0:
             cond_k = [x for x in batch.keys() if "traj" not in x and "feat" in x]
             cond_data = [batch[cond] for cond in cond_k]
+
             for cond in cond_k:
                 cond_name = cond.replace("_feat", "")
                 if isinstance(batch[f"{cond_name}_raw"], dict):
@@ -286,7 +320,12 @@ class Diffuser(L.LightningModule):
         self.log("val/loss", loss.item(), sync_dist=self.sync_dist)
 
         # Infer CLaTr features
-        _, gen_data = self.sample(self.ema.ema_model, data, cond_data, mask)
+        _, gen_data = self.sample(
+            self.ema.ema_model, 
+            data, 
+            cond_data, 
+            mask
+        )
         clip_seq = batch["caption_raw"]["clip_seq_caption"]
         clip_seq_mask = batch["caption_raw"]["clip_seq_mask"]
         with torch.autocast(device_type=data.device.type, dtype=data.dtype):
@@ -309,27 +348,44 @@ class Diffuser(L.LightningModule):
         # Update semantic metrics
         if "segments" in conds:
             self.do_segment = True
-            ref_traj = torch.stack([self.v_get_matrix(x) for x in data])
-            gen_traj = torch.stack([self.get_matrix(x) for x in gen_data])
+            # ref_traj_mats, ref_fovs = zip(*[self.v_get_matrix(x) for x in data])
+            # ref_traj = torch.stack(ref_traj_mats)
+            # gen_traj_mats, gen_fovs = zip(*[self.get_matrix(x) for x in gen_data])
+            # gen_traj = torch.stack(gen_traj_mats)
+
+            if self.v_batch_get_matrix is not None and self.batch_get_matrix is not None:
+                ref_traj, ref_fovs = self.v_batch_get_matrix(data)
+                gen_traj, gen_fovs = self.batch_get_matrix(gen_data)
+            else:
+                print("Using legacy get_matrix")
+                
+                ref_traj_mats, ref_fovs = zip(*[self.v_get_matrix(x) for x in data])
+                ref_traj = torch.stack(ref_traj_mats)
+                gen_traj_mats, gen_fovs = zip(*[self.get_matrix(x) for x in gen_data])
+                gen_traj = torch.stack(gen_traj_mats)
+
             # Project on SO(3) (if not in SO(3))
             p_gen_traj = project_so3(gen_traj.reshape(-1, 4, 4)).reshape(
                 *gen_traj.shape
             )
+            
             self.metric_callback.update_caption_metrics(
-                "val", p_gen_traj, conds["segments"], mask
+                "val", p_gen_traj, conds["segments"], mask, gen_fovs
             )
 
-            # Keep sample for validation plots
-            if "gen_traj" not in self.val_plot_samples:
-                ref_traj_ = self.v_get_matrix(data[0])
-                self.val_plot_samples["gen_traj"] = p_gen_traj[0].unsqueeze(0)
-                self.val_plot_samples["ref_traj"] = ref_traj_.unsqueeze(0)
-                self.val_plot_samples["mask"] = mask[0].unsqueeze(0)
-                if "caption" in conds:
-                    self.val_plot_samples["caption"] = conds["caption"][0]
-                if "char_raw_feat" in conds:
-                    char_feat = conds["char_raw_feat"][0].permute(1, 0)
-                    self.val_plot_samples["char_feat"] = char_feat.unsqueeze(0)
+            # # Keep sample for validation plots
+            # if "gen_traj" not in self.val_plot_samples:
+            #     ref_traj_mat, ref_fov = self.v_get_matrix(data[0])
+            #     self.val_plot_samples["gen_traj"] = p_gen_traj[0].unsqueeze(0)
+            #     self.val_plot_samples["ref_traj"] = ref_traj_mat.unsqueeze(0)
+            #     self.val_plot_samples["gen_fovs"] = gen_fovs[0].unsqueeze(0)
+            #     self.val_plot_samples["ref_fovs"] = ref_fov.unsqueeze(0)
+            #     self.val_plot_samples["mask"] = mask[0].unsqueeze(0)
+            #     if "caption" in conds:
+            #         self.val_plot_samples["caption"] = conds["caption"][0]
+            #     if "char_raw_feat" in conds:
+            #         char_feat = conds["char_raw_feat"][0].permute(1, 0)
+            #         self.val_plot_samples["char_feat"] = char_feat.unsqueeze(0)
 
 
 
@@ -348,37 +404,43 @@ class Diffuser(L.LightningModule):
         for key, value in metrics_dict.items():
             self.log(f"val/{key}", value, sync_dist=self.sync_dist)
 
-        if "gen_traj" not in self.val_plot_samples:
-            return
+        # if "gen_traj" not in self.val_plot_samples:
+        #     return
 
-        if "char" in self.modalities and "char_feat" in self.val_plot_samples:
-            modality = ("char_feat", self.val_plot_samples["char_feat"].cpu())
-        else:
-            modality = (None, [])
+        # if "char" in self.modalities and "char_feat" in self.val_plot_samples:
+        #     modality = ("char_feat", self.val_plot_samples["char_feat"].cpu())
+        # else:
+        #     modality = (None, [])
 
-        plots = self.draw_plots(
-            gen_matrices=self.val_plot_samples["gen_traj"].cpu(),
-            ref_matrices=self.val_plot_samples["ref_traj"].cpu(),
-            masks=self.val_plot_samples["mask"].cpu(),
-            modality=modality,
-        )
-        for plot_name, raw_plot in plots[0].figures.items():
-            raw_plot.canvas.draw_idle()
-            plot_data = np.frombuffer(raw_plot.canvas.tostring_rgb(), dtype=np.uint8)
-            plot_data = plot_data.reshape(
-                raw_plot.canvas.get_width_height()[::-1] + (3,)
-            )
-            plt.close(raw_plot)
-            log_args = dict(
-                key=f"val/plots/{plot_name}",
-                images=[plot_data],
-                step=self.global_step,
-                caption=[f"[Epoch {self.current_epoch}]"],
-            )
-            if "caption" in self.val_plot_samples:
-                log_args["caption"][0] += " " + self.val_plot_samples["caption"]
-            self.logger.log_image(**log_args)
+        # plots = self.draw_plots(
+        #     gen_matrices=self.val_plot_samples["gen_traj"].cpu(),
+        #     ref_matrices=self.val_plot_samples["ref_traj"].cpu(),
+        #     masks=self.val_plot_samples["mask"].cpu(),
+        #     modality=modality,
+        # )
+        # for plot_name, raw_plot in plots[0].figures.items():
+        #     raw_plot.canvas.draw_idle()
+        #     plot_data = np.frombuffer(raw_plot.canvas.tostring_rgb(), dtype=np.uint8)
+        #     plot_data = plot_data.reshape(
+        #         raw_plot.canvas.get_width_height()[::-1] + (3,)
+        #     )
+        #     plt.close(raw_plot)
+        #     log_args = dict(
+        #         key=f"val/plots/{plot_name}",
+        #         images=[plot_data],
+        #         step=self.global_step,
+        #         caption=[f"[Epoch {self.current_epoch}]"],
+        #     )
+        #     if "caption" in self.val_plot_samples:
+        #         log_args["caption"][0] += " " + self.val_plot_samples["caption"]
+        #     self.logger.log_image(**log_args)
 
+        # Force garbage collection and CUDA cache clearing
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        if hasattr(self, 'val_plot_samples'):
+            self.val_plot_samples.clear()
     # --------------------------------------------------------------------------------- #
 
     def on_test_start(self):
@@ -438,13 +500,16 @@ class Diffuser(L.LightningModule):
         if "segments" in conds:
             self.do_segment = True
             # Convert samples to raw pose matrices
-            gen_matrices = torch.stack([self.get_matrix(x) for x in gen_data])
+            gen_matrices_tuples = [self.get_matrix(x) for x in gen_data]
+            gen_matrices, gen_fovs = zip(*gen_matrices_tuples)
+            gen_matrices = torch.stack(gen_matrices)
+            gen_fovs = torch.stack(gen_fovs)
             # Project on SO(3) (if not in SO(3))
             p_gen_matrices = project_so3(gen_matrices.reshape(-1, 4, 4)).reshape(
                 *gen_matrices.shape
             )
             self.metric_callback.update_caption_metrics(
-                "test", p_gen_matrices, conds["segments"], mask
+                "test", p_gen_matrices, conds["segments"], mask, gen_fovs
             )
 
     def on_test_epoch_end(self):
@@ -474,13 +539,13 @@ class Diffuser(L.LightningModule):
         self.get_matrix = self.trainer.datamodule.train_dataset.get_matrix
         self.v_get_matrix = self.trainer.datamodule.eval_dataset.get_matrix
 
-    def predict_step(self, batch, batch_idx):
+    def predict_step(self, batch):
         ref_samples, mask = batch["traj_feat"], batch["padding_mask"]
 
+        conds = dict()
         if len(self.modalities) > 0:
             cond_k = [x for x in batch.keys() if "traj" not in x and "feat" in x]
             cond_data = [batch[cond] for cond in cond_k]
-            conds = {}
             for cond in cond_k:
                 cond_name = cond.replace("_feat", "")
                 if isinstance(batch[f"{cond_name}_raw"], dict):
@@ -489,16 +554,31 @@ class Diffuser(L.LightningModule):
                 else:
                     conds[cond_name] = batch[f"{cond_name}_raw"]
             batch["conds"] = conds
+
+            for idx, tensor in enumerate(cond_data):
+                print(f"Shape of cond_data[{idx}]: {tensor.shape}")
         else:
             cond_data = None
+            print("No condition data provided")
 
         # cf edm2 sigma_data normalization / https://arxiv.org/pdf/2312.02696.pdf
         if self.edm2_normalization:
             ref_samples *= self.loss_fn.sigma_data
-        _, gen_samples = self.sample(self.ema.ema_model, ref_samples, cond_data, mask)
-
-        batch["ref_samples"] = torch.stack([self.v_get_matrix(x) for x in ref_samples])
-        batch["gen_samples"] = torch.stack([self.get_matrix(x) for x in gen_samples])
+        _, gen_samples = self.sample(
+            self.ema.ema_model, 
+            ref_samples, 
+            cond_data, 
+            mask
+        )
+        ref_matrices_tuples = [self.v_get_matrix(x) for x in ref_samples]
+        ref_matrices, ref_fovs = zip(*ref_matrices_tuples)
+        batch["ref_samples"] = torch.stack(ref_matrices)
+        batch["ref_fovs"] = torch.stack(ref_fovs)
+        
+        gen_matrices_tuples = [self.get_matrix(x) for x in gen_samples]
+        gen_matrices, gen_fovs = zip(*gen_matrices_tuples)
+        batch["gen_samples"] = torch.stack(gen_matrices)
+        batch["gen_fovs"] = torch.stack(gen_fovs)
 
         return batch
 
@@ -510,7 +590,6 @@ class Diffuser(L.LightningModule):
         traj_samples: RawTrajectory,
         cond_samples: TensorType["num_samples", "num_feats"],
         mask: TensorType["num_samples", "num_feats"],
-        external_seeds: List[int] = None,
     ) -> Tuple[RawTrajectory, RawTrajectory]:
         # Pick latents
         num_samples = traj_samples.shape[0]
@@ -525,8 +604,8 @@ class Diffuser(L.LightningModule):
             latents,
             class_labels=cond_samples,
             mask=mask,
-            randn_like=rnd.randn_like,
             guidance_weight=self.guidance_weight,
+            randn_like=rnd.randn_like,
             # ----------------------------------- #
             num_steps=self.num_steps,
             sigma_min=self.sigma_min,
@@ -573,6 +652,9 @@ class Diffuser(L.LightningModule):
         bool_mask = ~mask.to(bool)
         x_next = latents * t_steps[0]
         bs = latents.shape[0]
+
+        has_class_cond = class_labels is not None
+
         for i, (t_cur, t_next) in enumerate(
             zip(t_steps[:-1], t_steps[1:])
         ):  # 0, ..., N-1
@@ -588,47 +670,43 @@ class Diffuser(L.LightningModule):
             x_hat = x_cur + (t_hat**2 - t_cur**2).sqrt() * S_noise * randn_like(x_cur)
 
             # Euler step.
-            if class_labels is not None:
-                class_label_knot = [torch.zeros_like(label) for label in class_labels]
+            if has_class_cond:
+                class_zeros = [torch.zeros_like(label) for label in class_labels]
+                
                 x_hat_both = torch.cat([x_hat, x_hat], dim=0)
-                y_label_both = [
-                    torch.cat([y, y_knot], dim=0)
-                    for y, y_knot in zip(class_labels, class_label_knot)
-                ]
-
-                bool_mask_both = torch.cat([bool_mask, bool_mask], dim=0)
                 t_hat_both = torch.cat([t_hat.expand(bs), t_hat.expand(bs)], dim=0)
-                cond_denoised, denoised = net(
-                    x_hat_both, t_hat_both, y=y_label_both, mask=bool_mask_both
-                ).chunk(2, dim=0)
-                denoised = denoised + (cond_denoised - denoised) * guidance_weight
+                bool_mask_both = torch.cat([bool_mask, bool_mask], dim=0)
+                
+                y_both = [torch.cat([y, y_zero], dim=0) for y, y_zero in zip(class_labels, class_zeros)]
+                
+                results = net(x_hat_both, t_hat_both, y=y_both, mask=bool_mask_both)
+                cond_denoised, uncond = results.chunk(2, dim=0)
+                
+                denoised = uncond + (cond_denoised - uncond) * guidance_weight
             else:
                 denoised = net(x_hat, t_hat.expand(bs), mask=bool_mask)
-            d_cur = (x_hat - denoised) / t_hat
+            
+            d_cur = (x_hat - denoised) / (t_hat + 1e-8)
             x_next = x_hat + (t_next - t_hat) * d_cur
 
             # Apply 2nd order correction.
             if i < num_steps - 1:
-                if class_labels is not None:
-                    class_label_knot = [
-                        torch.zeros_like(label) for label in class_labels
-                    ]
+                if has_class_cond:  
+                    class_zeros = [torch.zeros_like(label) for label in class_labels]
+                    
                     x_next_both = torch.cat([x_next, x_next], dim=0)
-                    y_label_both = [
-                        torch.cat([y, y_knot], dim=0)
-                        for y, y_knot in zip(class_labels, class_label_knot)
-                    ]
+                    t_next_both = torch.cat([t_next.expand(bs), t_next.expand(bs)], dim=0)
                     bool_mask_both = torch.cat([bool_mask, bool_mask], dim=0)
-                    t_next_both = torch.cat(
-                        [t_next.expand(bs), t_next.expand(bs)], dim=0
-                    )
-                    cond_denoised, denoised = net(
-                        x_next_both, t_next_both, y=y_label_both, mask=bool_mask_both
-                    ).chunk(2, dim=0)
-                    denoised = denoised + (cond_denoised - denoised) * guidance_weight
+                    
+                    y_both = [torch.cat([y, y_zero], dim=0) for y, y_zero in zip(class_labels, class_zeros)]
+                    
+                    results = net(x_next_both, t_next_both, y=y_both, mask=bool_mask_both)
+                    cond_denoised, uncond = results.chunk(2, dim=0)
+                    
+                    denoised = uncond + (cond_denoised - uncond) * guidance_weight
                 else:
                     denoised = net(x_next, t_next.expand(bs), mask=bool_mask)
-                d_prime = (x_next - denoised) / t_next
+                d_prime = (x_next - denoised) / (t_next + 1e-8)
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
         return x_next
